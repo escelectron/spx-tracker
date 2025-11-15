@@ -3,13 +3,14 @@ import plotly.graph_objs as go
 import pandas as pd
 from datetime import datetime, timedelta
 import os
+import json
 
 app = Flask(__name__)
 
-# Get the absolute path of the directory where this script is located
+# Define paths
 PROJECT_DIR = os.path.abspath(os.path.dirname(__file__))
-# Define the path for the data file
 DATA_FILE = os.path.join(PROJECT_DIR, "spx_data.json")
+DISPLAY_FILE = os.path.join(PROJECT_DIR, "display_data.json")
 
 @app.route('/')
 def index():
@@ -22,10 +23,16 @@ def index():
     if days_to_display < 10: days_to_display = 10
     if days_to_display > 500: days_to_display = 500
 
-    # === 2. Read data from the persistent file ===
+    # === 2. Read data files ===
     try:
+        # Read the raw data for the chart
         df_clean = pd.read_json(DATA_FILE, orient="split")
         df_clean['Date'] = pd.to_datetime(df_clean['Date'])
+        
+        # Read the pre-processed display data for the cards
+        with open(DISPLAY_FILE, 'r') as f:
+            display_data = json.load(f)
+            
     except FileNotFoundError:
         return """
         <body style="font-family: Arial, sans-serif; padding: 20px;">
@@ -39,27 +46,23 @@ def index():
     if df_clean.empty or len(df_clean) < 2:
          return "<h1>Error: Loaded data is empty or invalid.</h1>"
 
-    # === 3. Get data for chart and stats ===
+    # === 3. Get data for chart ===
     df = df_clean.tail(days_to_display).copy()
     
     if df.empty or len(df) < 2:
          return "<h1>Error: Not enough processed data to display after filtering.</h1>"
-
-    today_stats = df_clean.iloc[-1]
-    yesterday_stats = df_clean.iloc[-2]
-    today_chart = df.iloc[-1]
             
-    # === 4. Build Chart ===
+    # === 4. Build Chart (No changes, but uses display_data) ===
     fig = go.Figure()
 
     tomorrow_date = pd.Timestamp(df['Date'].iloc[-1]) + pd.Timedelta(days=1)
     df_tomorrow = pd.DataFrame({
         'Date': [tomorrow_date],
         'SPX': [pd.NA],
-        '1σ_Lower': [today_stats['Predicted_1σ_Lower']],
-        '1σ_Upper': [today_stats['Predicted_1σ_Upper']],
-        '2σ_Lower': [today_stats['Predicted_2σ_Lower']],
-        '2σ_Upper': [today_stats['Predicted_2σ_Upper']],
+        '1σ_Lower': [display_data['pred_1s_lower']], # Read from display_data
+        '1σ_Upper': [display_data['pred_1s_upper']],
+        '2σ_Lower': [display_data['pred_2s_lower']],
+        '2σ_Upper': [display_data['pred_2s_upper']],
     })
     df_all = pd.concat([df, df_tomorrow], ignore_index=True)
 
@@ -78,28 +81,23 @@ def index():
         fig.add_trace(go.Scatter(x=df_outside_2σ['Date'], y=df_outside_2σ['SPX'], mode='markers', name='Outside 2σ (Rare)', marker=dict(color='black', size=12, symbol='x', line=dict(width=2.5, color='black')), hovertemplate='Outside 2σ: %{y:.2f}<extra></extra>', showlegend=False))
     
     fig.add_shape(type="rect", x0=df['Date'].iloc[-1], x1=tomorrow_date, y0=df.iloc[-1]['2σ_Lower'], y1=df.iloc[-1]['2σ_Upper'], fillcolor="rgba(150,150,150,0.08)", line=dict(color="gray", width=1, dash="dot"), layer="below")
-    fig.add_annotation(x=tomorrow_date, y=df.iloc[-1]['2σ_Upper'], text="Tomorrow Prediction (Range Only)", showarrow=False, xanchor="right", yanchor="bottom", font=dict(size=12, color="gray"))
-    
+    fig.add_annotation(x=tomorrow_date, y=df.iloc[-1]['2σ_Upper'], text="Prediction (Range Only)", showarrow=False, xanchor="right", yanchor="bottom", font=dict(size=12, color="gray"))
     # --- (End of fig.add_trace code) ---
 
     fig.update_layout(
-        title=f"SPX Actual vs Predicted σ Bands (Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')})",
+        title=f"SPX Actual vs Predicted σ Bands (Data as of {display_data['latest_date_str']})",
         xaxis_title='Date', yaxis_title='Price',
         hovermode='x unified', template='plotly_white',
         height=600, showlegend=False
     )
 
-    # === 7. Calculate Stats ===
-    today_1s_range = today_chart['1σ_Upper'] - today_chart['1σ_Lower']
-    today_2s_range = today_chart['2σ_Upper'] - today_chart['2σ_Lower']
-    tomorrow_1s_range = today_stats['Predicted_1σ_Upper'] - today_stats['Predicted_1σ_Lower']
-    tomorrow_2s_range = today_stats['Predicted_2σ_Upper'] - today_stats['Predicted_2σ_Lower']
+    # === 5. Calculate Model Performance Stats ===
     total_days = len(df)
     within_1σ = df['Within_1σ'].sum()
     outside_1σ = df['Outside_1σ'].sum()
     outside_2σ = df['Outside_2σ'].sum()
 
-    # === 8. HTML Template (No changes from your last version) ===
+    # === 6. NEW HTML Template ===
     html = '''
     <!DOCTYPE html>
     <html>
@@ -138,24 +136,32 @@ def index():
                 </div>
             </div>
             <div class="stats-grid">
+                
                 <div class="stats-box">
-                    <h3>Market Values</h3>
-                    <p>SPX Today: <strong>{{"%.2f"|format(spx_today)}}</strong></p>
-                    <p>VIX Today: <strong>{{"%.2f"|format(vix_today)}}</strong></p>
+                    <h3>Latest Close ({{ display.latest_date_str }})</h3>
+                    <p>SPX: <strong>{{"%.2f"|format(display.latest_spx)}}</strong></p>
+                    <p>VIX: <strong>{{"%.2f"|format(display.latest_vix)}}</strong></p>
                     <hr>
-                    <p style="color:#555;">SPX Yesterday: {{"%.2f"|format(spx_yesterday)}}</p>
-                    <p style="color:#555;">VIX Yesterday: {{"%.2f"|format(vix_yesterday)}}</p>
+                    <p style="color:#555;">Previous ({{ display.previous_date_str }})</p>
+                    <p style="color:#555;">SPX: {{"%.2f"|format(display.previous_spx)}}</p>
+                    <p style="color:#555;">VIX: {{"%.2f"|format(display.previous_vix)}}</p>
                 </div>
+
                 <div class="stats-box">
-                    <h3>Today's Actual Range</h3>
-                    <p>1σ: <strong>{{"%.2f"|format(pred_today_1l)}} - {{"%.2f"|format(pred_today_1u)}}</strong> ({{ "%.2f"|format(pred_today_1r) }} pts)</p>
-                    <p>2σ: <strong>{{"%.2f"|format(pred_today_2l)}} - {{"%.2f"|format(pred_today_2u)}}</strong> ({{ "%.2f"|format(pred_today_2r) }} pts)</p>
+                    <h3>Range Test ({{ display.latest_date_str }})</h3>
+                    <p>1σ Prediction: <strong>{{"%.2f"|format(display.test_1s_lower)}} - {{"%.2f"|format(display.test_1s_upper)}}</strong></p>
+                    <p>2σ Prediction: <strong>{{"%.2f"|format(display.test_2s_lower)}} - {{"%.2f"|format(display.test_2s_upper)}}</strong></p>
+                    <hr>
+                    <p>Actual Close: <strong>{{"%.2f"|format(display.test_actual_close)}}</strong></p>
+                    <p>Result: {{ display.latest_result_str|safe }}</p>
                 </div>
+                
                 <div class="stats-box">
-                    <h3>Tomorrow's Predicted Range</h3>
-                    <p>1σ: <strong>{{"%.2f"|format(pred_tmrw_1l)}} - {{"%.2f"|format(pred_tmrw_1u)}}</strong> ({{ "%.2f"|format(pred_tmrw_1r) }} pts)</p>
-                    <p>2σ: <strong>{{"%.2f"|format(pred_tmrw_2l)}} - {{"%.2f"|format(pred_tmrw_2u)}}</strong> ({{ "%.2f"|format(pred_tmrw_2r) }} pts)</p>
+                    <h3>Prediction ({{ display.prediction_date_str }})</h3>
+                    <p>1σ: <strong>{{"%.2f"|format(display.pred_1s_lower)}} - {{"%.2f"|format(display.pred_1s_upper)}}</strong> ({{ "%.2f"|format(display.pred_1s_range) }} pts)</p>
+                    <p>2σ: <strong>{{"%.2f"|format(display.pred_2s_lower)}} - {{"%.2f"|format(display.pred_2s_upper)}}</strong> ({{ "%.2f"|format(display.pred_2s_range) }} pts)</p>
                 </div>
+                
                 <div class="stats-box">
                     <h3>Model Performance ({{td}} days)</h3>
                     <p>Within 1σ: {{w1}} ({{"%.1f"|format(p1)}}%)</p>
@@ -178,27 +184,16 @@ def index():
     </html>
     '''
 
-    # === 9. Pass all variables to the template ===
+    # === 7. Pass all variables to the template ===
     return render_template_string(
         html,
         chart_html=fig.to_html(include_plotlyjs='cdn', div_id="chart"),
         current_days=days_to_display,
-        spx_today=today_stats['SPX'],
-        vix_today=today_stats['VIX'],
-        spx_yesterday=yesterday_stats['SPX'],
-        vix_yesterday=yesterday_stats['VIX'],
-        pred_today_1u=today_chart['1σ_Upper'],
-        pred_today_1l=today_chart['1σ_Lower'],
-        pred_today_2u=today_chart['2σ_Upper'],
-        pred_today_2l=today_chart['2σ_Lower'],
-        pred_today_1r=today_1s_range,
-        pred_today_2r=today_2s_range,
-        pred_tmrw_1u=today_stats['Predicted_1σ_Upper'],
-        pred_tmrw_1l=today_stats['Predicted_1σ_Lower'],
-        pred_tmrw_2u=today_stats['Predicted_2σ_Upper'],
-        pred_tmrw_2l=today_stats['Predicted_2σ_Lower'],
-        pred_tmrw_1r=tomorrow_1s_range,
-        pred_tmrw_2r=tomorrow_2s_range,
+        
+        # Pass the whole display_data dictionary
+        display=display_data,
+        
+        # Model Performance stats
         td=total_days,
         w1=within_1σ,
         o1=outside_1σ,
@@ -210,4 +205,5 @@ def index():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Set debug=False for production, True for local testing
+    app.run(host='0.0.0.0', port=port, debug=True)
