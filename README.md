@@ -16,8 +16,9 @@ Follow these steps to run the application on your local machine for development 
 
 ### Steps
 1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/escelectron/spx-tracker.git](https://github.com/escelectron/spx-tracker.git)
+    ```bash    
+    git clone https://github.com/escelectron/spx-tracker.git
+cd spx-tracker
     cd spx-tracker
     ```
 
